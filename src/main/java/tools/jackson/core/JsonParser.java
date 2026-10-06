@@ -477,6 +477,78 @@ public abstract class JsonParser
     public abstract JsonParser skipChildren() throws JacksonException;
 
     /**
+     * Convenience method for explicitly verifying that input contains no
+     * content beyond a single (already read) root-level value: that is, that
+     * only legal trailing white space remains before end-of-input.
+     * It implements the "read one full root value, nothing else" mode in
+     * which success of the first token (or even of the whole first root
+     * value) must NOT be taken as success of the whole input: a second
+     * root-level value or any other trailing garbage fails the input.
+     *<p>
+     * Method is to be called after the target value has been fully
+     * constructed (parser positioned at or past the last token of the root
+     * value). Typical usage:
+     *<pre>
+     *   JsonParser p = ...;
+     *   MyValue value = readValue(p);      // construct target value
+     *   p.verifyNoTrailingContent();       // throws on trailing content
+     *   return value; // only reached for clean input: no "half-success"
+     *</pre>
+     * Note that since verification failure is signalled with an exception,
+     * the caller never observes a partially successful result: either the
+     * whole input is accepted, or nothing is.
+     *<p>
+     * Trailing white space and end-of-input are handled separately:
+     * legal trailing white space is skipped (it is not content), and only
+     * actual end-of-input concludes the input. For non-blocking parsers,
+     * temporarily unavailable input ({@link JsonToken#NOT_AVAILABLE}) is
+     * NOT end-of-input and is reported as-is so that the caller can feed
+     * more input (or signal end-of-input via the feeder) and call this
+     * method again.
+     *<p>
+     * Return value semantics:
+     *<ul>
+     *  <li>{@code null}: only (optional) trailing white space remained
+     *    before end-of-input -- input is clean.
+     *  </li>
+     *  <li>{@link JsonToken#NOT_AVAILABLE} (non-blocking parsers only):
+     *    no more input currently available but end-of-input not yet
+     *    signalled -- NOT a success; caller must feed more input (or
+     *    signal end-of-input) and re-call this method.
+     *  </li>
+     *  <li>Any other token (second root-level value or other trailing
+     *    content): {@link StreamReadException} is thrown, with location
+     *    pointing at the start of the actual trailing content (not at
+     *    end-of-input).
+     *  </li>
+     *</ul>
+     *<p>
+     * Note that this verification is strictly opt-in: the default parser
+     * capability of reading a sequence of consecutive root-level values
+     * (with successive {@link #nextToken} calls) is unchanged.
+     *
+     * @return {@code Null} if only legal trailing white space remains before
+     *   end-of-input; {@link JsonToken#NOT_AVAILABLE} if more input is needed
+     *   to determine this (non-blocking parsers only)
+     *
+     * @throws JacksonException for low-level read issues
+     * @throws tools.jackson.core.exc.StreamReadException if trailing content
+     *   (a second root-level value or garbage) is found, or for decoding
+     *   problems in such trailing content
+     *
+     * @since 3.3
+     */
+    public JsonToken verifyNoTrailingContent() throws JacksonException {
+        JsonToken t = nextToken();
+        if (t == null || t == JsonToken.NOT_AVAILABLE) {
+            return t;
+        }
+        throw _constructReadException(String.format(
+                "Trailing content after the root value: expected end-of-input, but found token %s",
+                t), currentTokenLocation());
+    }
+
+    /**
      * Method that may be used to force full handling of the current token
      * so that even if lazy processing is enabled, the whole contents are
      * read for possible retrieval. This is usually used to ensure that

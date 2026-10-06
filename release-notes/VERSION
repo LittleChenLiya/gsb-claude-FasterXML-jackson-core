@@ -57,6 +57,13 @@ JSON library.
  (reported by @cowtowncoder)
  (fix by @kalayciburak)
 
+Add `JsonParser.verifyNoTrailingContent()`: explicit "single full root
+  value" verification -- passes only if nothing but legal trailing white
+  space remains before end-of-input; reports second root-level values and
+  other trailing content with location of the trailing start; non-blocking
+  parsers report `JsonToken.NOT_AVAILABLE` (not EOF) when more input may
+  still arrive
+
 3.2.3 (21-Sep-2026)
 
 #1667: `JsonParser.willInternPropertyNames()` returns `true` even when
