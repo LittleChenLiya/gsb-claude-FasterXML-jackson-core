@@ -71,6 +71,30 @@ public enum StreamReadFeature
      */
     STRICT_DUPLICATE_DETECTION(false),
 
+    /**
+     * Feature that determines whether reading a single root-level value
+     * (via {@link JsonParser#readValueAs(Class)},
+     * {@link JsonParser#readValueAsTree()} and siblings) explicitly
+     * verifies that no further content -- neither a second root-level
+     * value nor other "garbage" -- follows it: only optional
+     * (format-specific) whitespace may precede end-of-input.
+     * If verification fails, a {@link StreamReadException} is thrown
+     * (with location pointing at the start of the trailing content)
+     * and no value is returned to the caller.
+     *<p>
+     * Note that for non-blocking (async) parsers, verification can only
+     * complete once end-of-input has been signalled (via
+     * {@link tools.jackson.core.async.NonBlockingInputFeeder#endOfInput()}):
+     * temporarily unavailable input is NOT considered end-of-input.
+     *<p>
+     * Feature is disabled by default, meaning that parsers keep the
+     * ability to read sequences of consecutive root-level values and
+     * no trailing-content check is performed.
+     *
+     * @since 3.3
+     */
+    FAIL_ON_TRAILING_TOKENS(false),
+
     // // // Other
 
     /**

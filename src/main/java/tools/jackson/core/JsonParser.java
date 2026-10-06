@@ -493,6 +493,72 @@ public abstract class JsonParser
      */
     public abstract void finishToken() throws JacksonException;
 
+    /**
+     * Method that explicitly verifies -- after a complete root-level value has
+     * been read -- that no further content remains in input, other than
+     * optional (format-specific) whitespace before end-of-input.
+     * It exists to support "read single root value, then require EOF" usage
+     * (see {@link StreamReadFeature#FAIL_ON_TRAILING_TOKENS}): successfully
+     * reading the first root value alone must not be taken to mean that the
+     * whole input was valid.
+     *<p>
+     * Handling of the possible outcomes:
+     *<ul>
+     * <li>Only (optional) whitespace remains before end-of-input:
+     *   {@code true} is returned.
+     *  </li>
+     * <li>A second root-level value (or any other non-whitespace trailing
+     *   content) is encountered: {@link StreamReadException} is thrown,
+     *   with location pointing at the start of the trailing content.
+     *  </li>
+     * <li>For non-blocking parsers, no input is currently available but
+     *   end-of-input has not been signalled either
+     *   ({@link JsonToken#NOT_AVAILABLE}): {@code false} is returned.
+     *   This is NOT considered end-of-input: caller is to feed more input
+     *   (or signal end-of-input via
+     *   {@link tools.jackson.core.async.NonBlockingInputFeeder#endOfInput()})
+     *   and call this method again; verification neither succeeds nor fails
+     *   at this point.
+     *  </li>
+     *</ul>
+     *<p>
+     * Note: this method is to be called right after a root-level value has
+     * been fully read (parser at root context); calling it while parser is
+     * inside a nested Object/Array value results in a
+     * {@link StreamReadException}.
+     *<p>
+     * Default implementation is provided in terms of {@link #nextToken()}
+     * and works for all parser implementations.
+     *
+     * @return {@code true} if end-of-input was verified (only legal trailing
+     *   whitespace remained); {@code false} if more input is needed before
+     *   verification can complete (non-blocking parsers only)
+     *
+     * @throws JacksonException for low-level read issues
+     * @throws StreamReadException if trailing content follows the root value
+     *   (or if called in the middle of a nested value)
+     *
+     * @since 3.3
+     */
+    public boolean verifyNoTrailingTokens() throws JacksonException {
+        TokenStreamContext ctxt = streamReadContext();
+        if ((ctxt != null) && !ctxt.inRoot()) {
+            throw new StreamReadException(this,
+"verifyNoTrailingTokens() called while parser is inside a nested value: may only be called after a complete root-level value",
+                    currentLocation());
+        }
+        JsonToken t = nextToken();
+        if (t == null) { // only (optional) trailing whitespace before EOF
+            return true;
+        }
+        if (t == JsonToken.NOT_AVAILABLE) { // non-blocking: inconclusive, not EOF
+            return false;
+        }
+        throw new StreamReadException(this, String.format(
+"Trailing token (of type %s) after the root value: only whitespace allowed before end-of-input",
+                t), currentTokenLocation());
+    }
+
     /*
     /**********************************************************************
     /* Public API, iterating accessors: property names

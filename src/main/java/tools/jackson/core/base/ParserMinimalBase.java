@@ -829,24 +829,49 @@ public abstract class ParserMinimalBase extends JsonParser
 
     @Override
     public <T> T readValueAs(Class<T> valueType) throws JacksonException {
-        return _objectReadContext.readValue(this, valueType);
+        T value = _objectReadContext.readValue(this, valueType);
+        _verifyNoTrailingTokensIfEnabled();
+        return value;
     }
 
     @Override
     public <T> T readValueAs(TypeReference<T> valueTypeRef) throws JacksonException {
-        return _objectReadContext.readValue(this, valueTypeRef);
+        T value = _objectReadContext.readValue(this, valueTypeRef);
+        _verifyNoTrailingTokensIfEnabled();
+        return value;
     }
 
     @SuppressWarnings("unchecked")
     @Override
     public <T> T readValueAs(ResolvedType type) throws JacksonException {
-        return (T) _objectReadContext.readValue(this, type);
+        T value = (T) _objectReadContext.readValue(this, type);
+        _verifyNoTrailingTokensIfEnabled();
+        return value;
     }
 
     @SuppressWarnings("unchecked")
     @Override
     public <T extends TreeNode> T readValueAsTree() throws JacksonException {
-        return (T) _objectReadContext.readTree(this);
+        T value = (T) _objectReadContext.readTree(this);
+        _verifyNoTrailingTokensIfEnabled();
+        return value;
+    }
+
+    /**
+     * Helper called after a root-level value has been constructed by
+     * {@link ObjectReadContext}: if {@link StreamReadFeature#FAIL_ON_TRAILING_TOKENS}
+     * is enabled, verifies that no trailing content follows the root value
+     * before the value is returned to the caller (strict failure must not
+     * hand out a "half-success" value).
+     */
+    protected void _verifyNoTrailingTokensIfEnabled() throws JacksonException {
+        if (isEnabled(StreamReadFeature.FAIL_ON_TRAILING_TOKENS)
+                && !verifyNoTrailingTokens()) {
+            // Non-blocking parser: temporarily missing input is not EOF, so
+            // verification cannot complete (and value cannot be returned) yet
+            _reportError("Cannot verify end-of-input after root value: "
+                    +"non-blocking parser has no input available but end-of-input has not been signalled");
+        }
     }
 
     /*

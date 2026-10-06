@@ -56,6 +56,10 @@ JSON library.
   `includeString()`
  (reported by @cowtowncoder)
  (fix by @kalayciburak)
+-: Add explicit "single root value, then EOF" read mode: new
+  `JsonParser.verifyNoTrailingTokens()` and `StreamReadFeature.FAIL_ON_TRAILING_TOKENS`
+  (latter makes `readValueAs()`/`readValueAsTree()` verify no trailing
+  content follows the root value)
 
 3.2.3 (21-Sep-2026)
 
