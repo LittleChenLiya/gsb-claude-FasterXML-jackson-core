@@ -17,6 +17,13 @@ JSON library.
 
 3.3.0 (not yet released)
 
+-: Add explicit token-buffer borrow life-cycle to `TextBuffer`: `seal()`
+  makes contents read-only (mutators fail with `IllegalStateException`);
+  generation-bound read-only `TextBuffer.View`s (`view()`/`owningView()`)
+  are invalidated when the buffer is cleared and reused, so old parser views
+  can never observe new token text; closing a borrowed view never destroys
+  the buffer it does not own and a failed close never leaves a view readable
+
 #1637: Add `JsonPointer.startsWith(JsonPointer)` to check prefix match
  (contributed by @scottslewis)
 #1646: Non-blocking ByteBuffer parser `releaseBuffered()` can write

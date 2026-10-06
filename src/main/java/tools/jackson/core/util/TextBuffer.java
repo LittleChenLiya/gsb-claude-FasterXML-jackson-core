@@ -25,6 +25,14 @@ import tools.jackson.core.io.NumberInput;
  *    </li>
  * </ul>
  *<p>
+ * Life-cycle: a buffer is writable until {@link #seal()} is called, after which
+ * its contents are read-only and all mutating methods fail with
+ * {@link IllegalStateException}. Read-only {@link View}s (parser views) may be
+ * created with {@link #view()} / {@link #owningView()}: a view is bound to the
+ * buffer identity and the buffer {@linkplain #generation() generation} at view
+ * creation time, so clearing and reusing the buffer for new token text
+ * invalidates older views instead of letting them observe the new tokens.
+ *<p>
  * NOTE: this base class does not enforce any length limits: methods that declare
  * {@link JacksonException} for exceeding maximum String length only throw it
  * when used via {@link ReadConstrainedTextBuffer}, which enforces
@@ -55,6 +63,29 @@ public class TextBuffer
      */
 
     private final BufferRecycler _allocator;
+
+    /*
+    /**********************************************************************
+    /* Explicit life-cycle state (sealing, generations)
+    /**********************************************************************
+     */
+
+    /**
+     * Lifecycle flag: once {@link #seal()} has been called, this buffer is
+     * read-only and all content-mutating methods (including
+     * {@link #releaseBuffers()}) fail with {@link IllegalStateException}.
+     */
+    private boolean _sealed;
+
+    /**
+     * Generation counter, incremented every time buffered content is
+     * discarded so that the buffer can be reused (by the various
+     * {@code resetWith...} methods, {@link #emptyAndGetCurrentSegment()}
+     * and {@link #releaseBuffers()}). {@link View}s bind to the generation
+     * that was current when they were created, which guarantees that an
+     * old view can never observe tokens buffered after a clear/reuse cycle.
+     */
+    private long _generation;
 
     /*
     /**********************************************************************
@@ -149,6 +180,94 @@ public class TextBuffer
         return new TextBuffer(null, initialSegment);
     }
 
+    /*
+    /**********************************************************************
+    /* Explicit life-cycle: sealing, generations, views
+    /**********************************************************************
+     */
+
+    /**
+     * Method to permanently seal this buffer, giving the borrowed token
+     * buffer an explicit lifecycle: after sealing, the buffer is read-only
+     * and every content-mutating method (the {@code resetWith...} methods,
+     * {@code append(...)}, {@link #releaseBuffers()} and the raw-access
+     * mutators) fails with {@link IllegalStateException}. Read accessors
+     * ({@link #size()}, {@link #contentsAsString()} and so on), as well as
+     * {@link #view()} / {@link #owningView()}, remain usable.
+     *<p>
+     * Sealing is one-way: there is no "unseal". Note that sealing does NOT
+     * advance the {@linkplain #generation() generation}: views created
+     * before sealing remain valid afterwards.
+     *
+     * @return This buffer, for call chaining
+     */
+    public TextBuffer seal() {
+        _sealed = true;
+        return this;
+    }
+
+    /**
+     * @return {@code true} if this buffer has been {@linkplain #seal() sealed}
+     *    and is now read-only
+     */
+    public boolean isSealed() {
+        return _sealed;
+    }
+
+    /**
+     * Accessor for the current content generation of this buffer. The
+     * generation is advanced every time buffered content is discarded for
+     * reuse; {@link View}s created for an earlier generation are stale and
+     * refuse to expose (possibly unrelated) new token text.
+     *
+     * @return Current content generation of this buffer
+     */
+    public long generation() {
+        return _generation;
+    }
+
+    /**
+     * Factory method for a borrowed read-only {@link View} of this buffer,
+     * bound to the current {@linkplain #generation() generation}. Closing
+     * a borrowed view only invalidates the view itself: it does NOT
+     * release, clear or otherwise destroy the buffer (which the view does
+     * not own).
+     *
+     * @return A borrowed {@link View} of this buffer
+     */
+    public View view() {
+        return new View(this, false);
+    }
+
+    /**
+     * Factory method for an owning read-only {@link View} of this buffer:
+     * like {@link #view()}, but resource ownership of the buffer is
+     * transferred to the view, so {@link View#close()} releases the
+     * buffer's underlying segments (even if the buffer was sealed).
+     *
+     * @return An owning {@link View} of this buffer
+     */
+    public View owningView() {
+        return new View(this, true);
+    }
+
+    /**
+     * Guard called by every content-mutating method to enforce the sealed
+     * (read-only) lifecycle state.
+     *
+     * @throws IllegalStateException if this buffer has been sealed
+     */
+    protected final void _checkWritable() {
+        if (_sealed) {
+            throw new IllegalStateException(
+                    "TextBuffer has been sealed: content is read-only, mutation not allowed");
+        }
+    }
+
+    private void _bumpGeneration() {
+        ++_generation;
+    }
+
     /**
      * Method called to indicate that the underlying buffers should now
      * be recycled if they haven't yet been recycled. Although caller
@@ -159,9 +278,28 @@ public class TextBuffer
      * Note: since Jackson 2.11, calling this method will NOT clear already
      * aggregated contents (that is, {@code _currentSegment}, to retain
      * current token text if (but only if!) already aggregated.
+     *<p>
+     * Note: like other mutating methods, this method fails with
+     * {@link IllegalStateException} if the buffer has been
+     * {@linkplain #seal() sealed}; an {@linkplain #owningView() owning view}
+     * may still release resources of a sealed buffer via {@link View#close()}.
      */
     public void releaseBuffers()
     {
+        _checkWritable();
+        _releaseBuffersInternal();
+    }
+
+    /**
+     * Internal implementation of {@link #releaseBuffers()}, bypassing the
+     * sealed check: used by {@link View#close()} when resource ownership of
+     * the buffer was transferred to the view.
+     */
+    private void _releaseBuffersInternal()
+    {
+        // content is discarded: invalidate views bound to earlier generations
+        _bumpGeneration();
+
         // inlined `resetWithEmpty()` (except leaving `_resultString` as-is
         {
             _inputStart = -1;
@@ -194,6 +332,8 @@ public class TextBuffer
      */
     public void resetWithEmpty()
     {
+        _checkWritable();
+        _bumpGeneration();
         _inputStart = -1; // indicates shared buffer not used
         _currentSize = 0;
         _inputLen = 0;
@@ -216,6 +356,8 @@ public class TextBuffer
      */
     public void resetWith(char ch)
     {
+        _checkWritable();
+        _bumpGeneration();
         _inputStart = -1;
         _inputLen = 0;
 
@@ -243,6 +385,8 @@ public class TextBuffer
      */
     public void resetWithShared(char[] buf, int offset, int len)
     {
+        _checkWritable();
+        _bumpGeneration();
         // First, let's clear intermediate values, if any:
         _resultString = null;
         _resultArray = null;
@@ -266,6 +410,8 @@ public class TextBuffer
      */
     public void resetWithCopy(char[] buf, int offset, int len) throws JacksonException
     {
+        _checkWritable();
+        _bumpGeneration();
         _inputBuffer = null;
         _inputStart = -1; // indicates shared buffer not used
         _inputLen = 0;
@@ -291,6 +437,8 @@ public class TextBuffer
      */
     public void resetWithCopy(String text, int start, int len) throws JacksonException
     {
+        _checkWritable();
+        _bumpGeneration();
         _inputBuffer = null;
         _inputStart = -1;
         _inputLen = 0;
@@ -313,6 +461,8 @@ public class TextBuffer
      */
     public void resetWithString(String value) throws JacksonException
     {
+        _checkWritable();
+        _bumpGeneration();
         _inputBuffer = null;
         _inputStart = -1;
         _inputLen = 0;
@@ -342,6 +492,8 @@ public class TextBuffer
      */
     public String resetWithASCII(byte[] buffer, int offset, int len) throws JacksonException
     {
+        _checkWritable();
+        _bumpGeneration();
         _inputBuffer = null;
         _inputStart = -1;
         _inputLen = 0;
@@ -374,6 +526,8 @@ public class TextBuffer
      */
     public String resetWithUTF8(byte[] buffer, int offset, int len) throws JacksonException
     {
+        _checkWritable();
+        _bumpGeneration();
         _inputBuffer = null;
         _inputStart = -1;
         _inputLen = 0;
@@ -810,6 +964,7 @@ public class TextBuffer
      * buffer; if it is, it will copy such contents to private buffer.
      */
     public void ensureNotShared() {
+        _checkWritable();
         if (_inputStart >= 0) {
             unshare(16);
         }
@@ -820,6 +975,7 @@ public class TextBuffer
      * @throws JacksonException if the buffer has grown too large (only thrown by {@link ReadConstrainedTextBuffer}; see {@link tools.jackson.core.StreamReadConstraints.Builder#maxStringLength(int)})
      */
     public void append(char c) throws JacksonException {
+        _checkWritable();
         // Using shared buffer so far?
         if (_inputStart >= 0) {
             unshare(16);
@@ -845,6 +1001,7 @@ public class TextBuffer
      */
     public void append(char[] c, int start, int len) throws JacksonException
     {
+        _checkWritable();
         // Can't append to shared buf (sanity check)
         if (_inputStart >= 0) {
             unshare(len);
@@ -890,6 +1047,7 @@ public class TextBuffer
      */
     public void append(String str, int offset, int len) throws JacksonException
     {
+        _checkWritable();
         // Can't append to shared buf (sanity check)
         if (_inputStart >= 0) {
             unshare(len);
@@ -943,6 +1101,7 @@ public class TextBuffer
 
     public char[] getCurrentSegment()
     {
+        _checkWritable();
         /* Since the intention of the caller is to directly add stuff into
          * buffers, we should NOT have anything in shared buffer... ie. may
          * need to unshare contents.
@@ -963,6 +1122,8 @@ public class TextBuffer
 
     public char[] emptyAndGetCurrentSegment()
     {
+        _checkWritable();
+        _bumpGeneration();
         // inlined 'resetWithEmpty()'
         _inputStart = -1; // indicates shared buffer not used
         _currentSize = 0;
@@ -984,7 +1145,10 @@ public class TextBuffer
     }
 
     public int getCurrentSegmentSize() { return _currentSize; }
-    public void setCurrentLength(int len) { _currentSize = len; }
+    public void setCurrentLength(int len) {
+        _checkWritable();
+        _currentSize = len;
+    }
 
     /**
      * Convenience method that finishes the current active content segment
@@ -998,6 +1162,7 @@ public class TextBuffer
      * @throws JacksonException if the text is too large (only thrown by {@link ReadConstrainedTextBuffer}; see {@link tools.jackson.core.StreamReadConstraints.Builder#maxStringLength(int)})
      */
     public String setCurrentAndReturn(int len) throws JacksonException {
+        _checkWritable();
         _currentSize = len;
         // We can simplify handling here compared to full `contentsAsString()`:
         if (_segmentSize > 0) { // longer text; call main method
@@ -1016,6 +1181,7 @@ public class TextBuffer
      * @throws JacksonException if the text is too large (only thrown by {@link ReadConstrainedTextBuffer}; see {@link tools.jackson.core.StreamReadConstraints.Builder#maxStringLength(int)})
      */
     public char[] finishCurrentSegment() throws JacksonException {
+        _checkWritable();
         if (_segments == null) {
             _segments = new ArrayList<>(4);
         }
@@ -1052,6 +1218,7 @@ public class TextBuffer
     public String finishAndReturn(int lastSegmentEnd, boolean trimTrailingSpaces)
         throws JacksonException
     {
+        _checkWritable();
         if (trimTrailingSpaces) {
             // First, see if it's enough to trim end of current segment:
             int ptr = lastSegmentEnd - 1;
@@ -1097,6 +1264,7 @@ public class TextBuffer
      */
     public char[] expandCurrentSegment()
     {
+        _checkWritable();
         final char[] curr = _currentSegment;
         // Let's grow by 50% by default
         final int len = curr.length;
@@ -1118,6 +1286,7 @@ public class TextBuffer
      * @return Expanded current segment
      */
     public char[] expandCurrentSegment(int minSize) {
+        _checkWritable();
         char[] curr = _currentSegment;
         if (curr.length >= minSize) return curr;
         _currentSegment = curr = Arrays.copyOf(curr, minSize);
@@ -1270,5 +1439,229 @@ public class TextBuffer
     protected void validateStringLength(int length) throws JacksonException
     {
         // no-op
+    }
+
+    /*
+    /**********************************************************************
+    /* Nested types
+    /**********************************************************************
+     */
+
+    /**
+     * Read-only "parser view" over a {@link TextBuffer}, obtained via
+     * {@link TextBuffer#view()} (borrowed) or {@link TextBuffer#owningView()}
+     * (owning). A view is bound to
+     *<ul>
+     *  <li>the <b>identity</b> of the buffer it was created from: the borrowed
+     *     buffer reference is retained for the whole lifetime of the view
+     *     (and remains accessible via {@link #buffer()} even after
+     *     {@link #close()}), and
+     *    </li>
+     *  <li>the buffer <b>{@linkplain TextBuffer#generation() generation}</b>
+     *     at the time of view creation: if the buffer is cleared and reused
+     *     for new token text (any {@code resetWith...} method,
+     *     {@link TextBuffer#emptyAndGetCurrentSegment()} or
+     *     {@link TextBuffer#releaseBuffers()}), its generation advances and
+     *     this view is invalidated -- an old view can never observe tokens
+     *     buffered after the reuse.
+     *    </li>
+     * </ul>
+     * Ownership semantics of {@link #close()}:
+     *<ul>
+     *  <li>A <b>borrowed</b> view (from {@link TextBuffer#view()}) never
+     *     destroys the buffer: closing only invalidates the view itself, the
+     *     buffer keeps its contents and remains fully usable.
+     *    </li>
+     *  <li>An <b>owning</b> view (from {@link TextBuffer#owningView()}) has
+     *     resource ownership of the buffer transferred to it: closing
+     *     releases the buffer's underlying segments (see
+     *     {@link TextBuffer#releaseBuffers()}), even if the buffer was
+     *     {@linkplain TextBuffer#seal() sealed}.
+     *    </li>
+     * </ul>
+     * If resource release fails during {@link #close()} (a "resource exit
+     * error"), the view is still marked closed: it is never left in a
+     * readable state after a failed close.
+     */
+    public final static class View
+        implements AutoCloseable
+    {
+        /**
+         * Buffer this view is bound to; identity is preserved for the whole
+         * lifetime of the view (not cleared by {@link #close()}).
+         */
+        private final TextBuffer _buffer;
+
+        /**
+         * Buffer generation this view is bound to.
+         */
+        private final long _generation;
+
+        /**
+         * Whether this view owns the buffer (and releases its resources on
+         * {@link #close()}) or merely borrows it.
+         */
+        private final boolean _owned;
+
+        private boolean _closed;
+
+        private View(TextBuffer buffer, boolean owned) {
+            _buffer = buffer;
+            _generation = buffer.generation();
+            _owned = owned;
+        }
+
+        /*
+        /******************************************************************
+        /* Life-cycle accessors
+        /******************************************************************
+         */
+
+        /**
+         * @return {@code true} if {@link #close()} has been called on this view
+         */
+        public boolean isClosed() {
+            return _closed;
+        }
+
+        /**
+         * @return {@code true} if this view can still be used to read buffer
+         *    contents: not {@linkplain #isClosed() closed} and the buffer has
+         *    not been cleared/reused since this view was created
+         */
+        public boolean isValid() {
+            return !_closed && (_buffer.generation() == _generation);
+        }
+
+        /**
+         * @return {@code true} if this view owns the buffer (see
+         *    {@link TextBuffer#owningView()}); {@code false} for borrowed views
+         */
+        public boolean ownsBuffer() {
+            return _owned;
+        }
+
+        /**
+         * @return Buffer generation this view is bound to
+         */
+        public long generation() {
+            return _generation;
+        }
+
+        /**
+         * Accessor for the buffer this view was created from. The borrowed
+         * buffer identity is preserved even after {@link #close()}; closing
+         * a borrowed view never destroys (clears or releases) the buffer.
+         *
+         * @return Buffer this view is bound to
+         */
+        public TextBuffer buffer() {
+            return _buffer;
+        }
+
+        /*
+        /******************************************************************
+        /* Read accessors (fail if view closed or stale)
+        /******************************************************************
+         */
+
+        /**
+         * @return Number of characters in the buffered token text
+         */
+        public int size() {
+            _checkValid();
+            return _buffer.size();
+        }
+
+        /**
+         * Emptiness check based purely on buffered content length. Note that
+         * a buffer holding the {@code null} token (the 4-character JSON null
+         * literal) is NOT empty: the null token is real token text, not an
+         * empty buffer.
+         *
+         * @return {@code true} if the buffer contains no characters at all
+         */
+        public boolean isEmpty() {
+            _checkValid();
+            return _buffer.size() == 0;
+        }
+
+        /**
+         * @return Buffered token text as a {@link String}
+         *
+         * @throws JacksonException if the contents are too large
+         */
+        public String contentsAsString() throws JacksonException {
+            _checkValid();
+            return _buffer.contentsAsString();
+        }
+
+        /**
+         * @return Buffered token text as a newly allocated {@code char[]}
+         *
+         * @throws JacksonException if the contents are too large
+         */
+        public char[] contentsAsArray() throws JacksonException {
+            _checkValid();
+            return _buffer.contentsAsArray();
+        }
+
+        /**
+         * @return Buffered token text as a {@code char[]} (may be the
+         *    underlying segment; see {@link TextBuffer#getTextBuffer()})
+         *
+         * @throws JacksonException if the contents are too large
+         */
+        public char[] getTextBuffer() throws JacksonException {
+            _checkValid();
+            return _buffer.getTextBuffer();
+        }
+
+        /*
+        /******************************************************************
+        /* Life-cycle: close
+        /******************************************************************
+         */
+
+        /**
+         * Closes this view. For a borrowed view this only invalidates the
+         * view: the buffer (which the view does not own) is left untouched.
+         * For an owning view the buffer's resources are released as well.
+         *<p>
+         * If releasing resources fails, the failure is propagated to the
+         * caller but the view is still marked closed: a resource exit error
+         * never leaves the view readable.
+         */
+        @Override
+        public void close() {
+            if (_closed) {
+                return;
+            }
+            try {
+                if (_owned) {
+                    // Ownership of the buffer was transferred to this view, so
+                    // release its resources (bypasses the sealed check: sealing
+                    // only blocks content mutation, not owned resource release)
+                    _buffer._releaseBuffersInternal();
+                }
+                // borrowed view: buffer is NOT ours, must not destroy it
+            } finally {
+                // Even if resource exit failed, this view must not remain readable
+                _closed = true;
+            }
+        }
+
+        private void _checkValid() {
+            if (_closed) {
+                throw new IllegalStateException(
+                        "TextBuffer.View has been closed: no longer readable");
+            }
+            if (_buffer.generation() != _generation) {
+                throw new IllegalStateException(String.format(
+                        "TextBuffer.View is stale: buffer was cleared and reused after this view was created "
+                        +"(view generation %d, buffer generation %d); refusing to expose new token text",
+                        _generation, _buffer.generation()));
+            }
+        }
     }
 }
