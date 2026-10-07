@@ -1,5 +1,6 @@
 package tools.jackson.core.base;
 
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.Arrays;
@@ -1115,6 +1116,31 @@ public abstract class ParserBase extends ParserMinimalBase
             throws StreamReadException
     {
         return _reportError(b64variant.missingPaddingMessage());
+    }
+
+    /**
+     * Helper method called when writing decoded Base64 content to the
+     * caller-provided {@link java.io.OutputStream} (see
+     * {@link JsonParser#readBinaryValue(Base64Variant, java.io.OutputStream)})
+     * fails with an {@link java.io.IOException}: wraps the underlying
+     * exception (retained as the {@linkplain JacksonException#getCause() cause})
+     * and adds context about the current token location as well as the number
+     * of bytes that had been successfully written before the failure.
+     *<p>
+     * Note that unlike actual Base64 decoding problems (which are reported as
+     * {@link StreamReadException}s), failures to write out decoded content are
+     * reported as {@link JacksonIOException}s since they are not parsing
+     * problems.
+     *
+     * @since 3.3
+     */
+    protected JacksonIOException _wrapBinaryWriteFailure(IOException ioe, int bytesWritten)
+    {
+        final TokenStreamLocation loc = currentTokenLocation();
+        String msg = String.format(
+                "Failed to write decoded Base64 content to OutputStream after %d bytes had been written: %s",
+                bytesWritten, ioe.getMessage());
+        return JacksonIOException.construct(msg, loc, ioe, this);
     }
 
     /*

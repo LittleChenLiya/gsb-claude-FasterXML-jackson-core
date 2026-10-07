@@ -56,6 +56,9 @@ JSON library.
   `includeString()`
  (reported by @cowtowncoder)
  (fix by @kalayciburak)
+-: `JsonParser.readBinaryValue(Base64Variant, OutputStream)` now reports
+  failures to write decoded Base64 content with token location and number
+  of bytes written, retaining the underlying `IOException` as the cause
 
 3.2.3 (21-Sep-2026)
 

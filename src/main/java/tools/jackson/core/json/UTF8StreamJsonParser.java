@@ -549,7 +549,7 @@ public class UTF8StreamJsonParser
             try {
                 out.write(b);
             } catch (IOException e) {
-                throw _wrapIOFailure(e);
+                throw _wrapBinaryWriteFailure(e, 0);
             }
             return b.length;
         }
@@ -593,8 +593,12 @@ public class UTF8StreamJsonParser
 
             // enough room? If not, flush
             if (outputPtr > outputEnd) {
+                try {
+                    out.write(buffer, 0, outputPtr);
+                } catch (IOException e) {
+                    throw _wrapBinaryWriteFailure(e, outputCount);
+                }
                 outputCount += outputPtr;
-                out.write(buffer, 0, outputPtr);
                 outputPtr = 0;
             }
 
@@ -695,8 +699,12 @@ public class UTF8StreamJsonParser
         }
         _tokenIncomplete = false;
         if (outputPtr > 0) {
+            try {
+                out.write(buffer, 0, outputPtr);
+            } catch (IOException e) {
+                throw _wrapBinaryWriteFailure(e, outputCount);
+            }
             outputCount += outputPtr;
-            out.write(buffer, 0, outputPtr);
         }
         return outputCount;
     }

@@ -4,6 +4,7 @@ import java.io.Closeable;
 import java.io.IOException;
 
 import tools.jackson.core.JacksonException;
+import tools.jackson.core.TokenStreamLocation;
 
 /**
  * Exception type used to wrap low-level I/O issues that are reported
@@ -31,12 +32,33 @@ public class JacksonIOException extends JacksonException
         _processor = processor;
     }
 
+    /**
+     * @since 3.3
+     */
+    protected JacksonIOException(Closeable processor, String msg, TokenStreamLocation loc,
+            IOException source) {
+        super(processor, msg, loc, source);
+    }
+
     public static JacksonIOException construct(IOException e) {
         return construct(e, null);
     }
 
     public static JacksonIOException construct(IOException e, Closeable processor) {
         return new JacksonIOException(processor, e);
+    }
+
+    /**
+     * Factory method used when additional context (beyond the message of the
+     * underlying {@link IOException}) is available: specified message and
+     * location are used, and the underlying {@link IOException} is retained
+     * as the {@linkplain #getCause() cause}.
+     *
+     * @since 3.3
+     */
+    public static JacksonIOException construct(String msg, TokenStreamLocation loc,
+            IOException e, Closeable processor) {
+        return new JacksonIOException(processor, msg, loc, e);
     }
 
     public JacksonIOException withProcessor(Closeable processor) {
