@@ -900,6 +900,8 @@ public abstract class ParserBase extends ParserMinimalBase
             // Let's actually parse from String representation, to avoid
             // rounding errors that non-decimal floating operations could incur
             final String numStr = _numberString == null ? getString() : _numberString;
+            // May throw StreamConstraintsException (w/ token location):
+            _checkBigDecimalLimits(numStr);
             _numberBigDecimal = NumberInput.parseBigDecimal(
                     numStr,
                     isEnabled(StreamReadFeature.USE_FAST_BIG_NUMBER_PARSER));
@@ -963,6 +965,8 @@ public abstract class ParserBase extends ParserMinimalBase
         }
         try {
             // NOTE! Length of number string has been validated earlier
+            // May throw StreamConstraintsException (w/ token location):
+            _checkBigDecimalLimits(_numberString);
             _numberBigDecimal = NumberInput.parseBigDecimal(
                     _numberString,
                     isEnabled(StreamReadFeature.USE_FAST_BIG_NUMBER_PARSER));
@@ -971,6 +975,99 @@ public abstract class ParserBase extends ParserMinimalBase
         }
         _numberString = null;
         return _numberBigDecimal;
+    }
+
+    /**
+     * Helper method called before a {@link BigDecimal} is constructed from the
+     * textual representation of a JSON number token, to verify that the
+     * precision (number of significant digits) and the magnitude (absolute
+     * value) of the exponent are within limits specified by configured
+     * {@link StreamReadConstraints}
+     * (see {@link StreamReadConstraints#validateBigDecimalPrecision(int, int)}).
+     *<p>
+     * The check is done by inspecting the original number token text directly,
+     * without constructing the (potentially very expensive) {@code BigDecimal}
+     * value; the token text itself is left intact so it remains available
+     * (for example via {@link #getString()}) whether the check passes or fails.
+     *<p>
+     * If no limit has been configured (the default), this method returns
+     * without doing anything.
+     *
+     * @param numStr Textual representation of the number token to check
+     *
+     * @throws StreamConstraintsException If precision or exponent magnitude
+     *    exceeds the maximum allowed (exception carries the token location)
+     */
+    protected void _checkBigDecimalLimits(String numStr) throws StreamConstraintsException
+    {
+        final StreamReadConstraints constraints = _streamReadConstraints;
+        if (!constraints.hasMaxBigDecimalPrecision()) {
+            return;
+        }
+        // Scan the token text for significant digit count (precision) and
+        // explicit exponent; token is known to be a syntactically valid
+        // number (or, at worst, something the actual parser will reject)
+        final int len = numStr.length();
+        int i = 0;
+        char c = numStr.charAt(0);
+        if (c == '-' || c == '+') {
+            i = 1;
+        }
+        int precision = 0;
+        boolean nonZeroSeen = false;
+        long exponent = 0L;
+        int expSign = 1;
+        for (; i < len; ++i) {
+            c = numStr.charAt(i);
+            if (c == 'e' || c == 'E') {
+                if (++i < len) {
+                    c = numStr.charAt(i);
+                    if (c == '-') {
+                        expSign = -1;
+                        ++i;
+                    } else if (c == '+') {
+                        ++i;
+                    }
+                }
+                for (; i < len; ++i) {
+                    c = numStr.charAt(i);
+                    if (c < '0' || c > '9') {
+                        break;
+                    }
+                    exponent = (exponent * 10) + (c - '0');
+                    if (exponent > Integer.MAX_VALUE) {
+                        // Saturate: far beyond any limit that can be configured
+                        exponent = Integer.MAX_VALUE;
+                        break;
+                    }
+                }
+                break;
+            }
+            if (c >= '0' && c <= '9') {
+                if (c != '0') {
+                    nonZeroSeen = true;
+                }
+                // Leading zeroes are not significant, rest are
+                if (nonZeroSeen) {
+                    ++precision;
+                }
+            } else if (c != '.') {
+                // Not a valid number character (eg "NaN"): stop scanning,
+                // let the actual parser deal with it
+                break;
+            }
+        }
+        if (precision == 0) {
+            // Zero value: BigDecimal precision of "0" (in any form) is 1
+            precision = 1;
+        }
+        final int exp = (int) ((expSign < 0) ? -exponent : exponent);
+        try {
+            constraints.validateBigDecimalPrecision(precision, exp);
+        } catch (StreamConstraintsException e) {
+            // Re-throw with location of the offending token attached
+            throw new StreamConstraintsException(e.getMessage(), currentTokenLocation());
+        }
     }
 
     /**

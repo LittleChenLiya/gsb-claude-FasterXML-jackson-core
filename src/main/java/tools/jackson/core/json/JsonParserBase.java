@@ -337,6 +337,10 @@ public abstract class JsonParserBase
             //    value is actually needed.
             // 24-Jun-2024, tatu: No; we shouldn't have to defer unless specifically
             //    request w/ `getNumberValueDeferred()` or so
+            // May throw StreamConstraintsException (w/ token location):
+            if (_streamReadConstraints.hasMaxBigDecimalPrecision()) {
+                _checkBigDecimalLimits(_textBuffer.contentsAsString());
+            }
             _numberBigDecimal = _textBuffer.contentsAsDecimal(isEnabled(StreamReadFeature.USE_FAST_BIG_NUMBER_PARSER));
             _numTypesValid = NR_BIGDECIMAL;
         } else if (expType == NR_DOUBLE) {
