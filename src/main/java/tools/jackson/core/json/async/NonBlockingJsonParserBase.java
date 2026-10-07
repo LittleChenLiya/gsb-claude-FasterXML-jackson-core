@@ -586,7 +586,7 @@ public abstract class NonBlockingJsonParserBase
         try {
             out.write(b);
         } catch (IOException e) {
-            throw _wrapIOFailure(e);
+            throw _wrapBinaryWriteFailure(e, 0);
         }
         return b.length;
     }

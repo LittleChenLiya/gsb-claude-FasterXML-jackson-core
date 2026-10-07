@@ -1469,6 +1469,9 @@ public abstract class JsonParser
      * @return Number of bytes that were decoded and written via {@link OutputStream}
      *
      * @throws JacksonIOException for low-level read issues
+     * @throws tools.jackson.core.exc.BinaryWriteException if writing decoded
+     *    content to {@code out} fails (token location and number of bytes
+     *    written before the failure are retained; {@code out} is never closed)
      * @throws tools.jackson.core.exc.StreamReadException for decoding problems
      */
     public int readBinaryValue(OutputStream out) throws JacksonException {
@@ -1485,6 +1488,9 @@ public abstract class JsonParser
      * @return Number of bytes that were decoded and written via {@link OutputStream}
      *
      * @throws JacksonIOException for low-level read issues
+     * @throws tools.jackson.core.exc.BinaryWriteException if writing decoded
+     *    content to {@code out} fails (token location and number of bytes
+     *    written before the failure are retained; {@code out} is never closed)
      * @throws tools.jackson.core.exc.StreamReadException for decoding problems
      */
     public int readBinaryValue(Base64Variant bv, OutputStream out) throws JacksonException {

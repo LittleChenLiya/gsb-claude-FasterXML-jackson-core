@@ -522,7 +522,7 @@ public class ReaderBasedJsonParser
             try {
                 out.write(b);
             } catch (IOException e) {
-                throw _wrapIOFailure(e);
+                throw _wrapBinaryWriteFailure(e, 0);
             }
             return b.length;
         }
@@ -563,12 +563,12 @@ public class ReaderBasedJsonParser
 
             // enough room? If not, flush
             if (outputPtr > outputEnd) {
-                outputCount += outputPtr;
                 try {
                     out.write(buffer, 0, outputPtr);
                 } catch (IOException e) {
-                    throw _wrapIOFailure(e);
+                    throw _wrapBinaryWriteFailure(e, outputCount);
                 }
+                outputCount += outputPtr;
                 outputPtr = 0;
             }
 
@@ -669,12 +669,12 @@ public class ReaderBasedJsonParser
         }
         _tokenIncomplete = false;
         if (outputPtr > 0) {
-            outputCount += outputPtr;
             try {
                 out.write(buffer, 0, outputPtr);
             } catch (IOException e) {
-                throw _wrapIOFailure(e);
+                throw _wrapBinaryWriteFailure(e, outputCount);
             }
+            outputCount += outputPtr;
         }
         return outputCount;
     }

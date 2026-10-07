@@ -6,6 +6,7 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 
 import tools.jackson.core.*;
+import tools.jackson.core.exc.BinaryWriteException;
 import tools.jackson.core.exc.InputCoercionException;
 import tools.jackson.core.exc.JacksonIOException;
 import tools.jackson.core.exc.StreamConstraintsException;
@@ -1193,6 +1194,25 @@ public abstract class ParserMinimalBase extends JsonParser
     // @since 3.0
     protected JacksonException _wrapIOFailure(IOException e) {
         return JacksonIOException.construct(e, this);
+    }
+
+    /**
+     * Helper method used to wrap {@link IOException}s that occur when
+     * writing decoded binary (Base64) content to a caller-provided
+     * {@link java.io.OutputStream} during {@code readBinaryValue()}:
+     * in addition to the underlying I/O problem (retained as the cause),
+     * the resulting exception carries the token location and the number
+     * of bytes successfully written before the failure.
+     *
+     * @param e Underlying I/O failure
+     * @param bytesWritten Number of bytes successfully written before failure
+     *
+     * @return Exception to throw
+     *
+     * @since 3.3
+     */
+    protected JacksonException _wrapBinaryWriteFailure(IOException e, long bytesWritten) {
+        return BinaryWriteException.construct(this, e, currentTokenLocation(), bytesWritten);
     }
 
     protected <T> T _throwInternal() {

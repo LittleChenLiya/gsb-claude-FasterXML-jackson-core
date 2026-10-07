@@ -549,7 +549,7 @@ public class UTF8StreamJsonParser
             try {
                 out.write(b);
             } catch (IOException e) {
-                throw _wrapIOFailure(e);
+                throw _wrapBinaryWriteFailure(e, 0);
             }
             return b.length;
         }
@@ -557,15 +557,13 @@ public class UTF8StreamJsonParser
         byte[] buf = _ioContext.allocBase64Buffer();
         try {
             return _readBinary(b64variant, out, buf);
-        } catch (IOException e) {
-            throw _wrapIOFailure(e);
         } finally {
             _ioContext.releaseBase64Buffer(buf);
         }
     }
 
     protected int _readBinary(Base64Variant b64variant, OutputStream out,
-            byte[] buffer) throws IOException
+            byte[] buffer) throws JacksonException
     {
         int outputPtr = 0;
         final int outputEnd = buffer.length - 3;
@@ -593,8 +591,12 @@ public class UTF8StreamJsonParser
 
             // enough room? If not, flush
             if (outputPtr > outputEnd) {
+                try {
+                    out.write(buffer, 0, outputPtr);
+                } catch (IOException e) {
+                    throw _wrapBinaryWriteFailure(e, outputCount);
+                }
                 outputCount += outputPtr;
-                out.write(buffer, 0, outputPtr);
                 outputPtr = 0;
             }
 
@@ -695,8 +697,12 @@ public class UTF8StreamJsonParser
         }
         _tokenIncomplete = false;
         if (outputPtr > 0) {
+            try {
+                out.write(buffer, 0, outputPtr);
+            } catch (IOException e) {
+                throw _wrapBinaryWriteFailure(e, outputCount);
+            }
             outputCount += outputPtr;
-            out.write(buffer, 0, outputPtr);
         }
         return outputCount;
     }

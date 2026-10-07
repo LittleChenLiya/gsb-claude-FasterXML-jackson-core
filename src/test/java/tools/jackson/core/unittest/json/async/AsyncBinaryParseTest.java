@@ -7,8 +7,10 @@ import org.junit.jupiter.api.Test;
 import tools.jackson.core.JsonGenerator;
 import tools.jackson.core.JsonToken;
 import tools.jackson.core.ObjectWriteContext;
+import tools.jackson.core.exc.BinaryWriteException;
 import tools.jackson.core.json.JsonFactory;
 import tools.jackson.core.unittest.async.AsyncTestBase;
+import tools.jackson.core.unittest.base64.Base64WriteFailureTest;
 import tools.jackson.core.unittest.testutil.AsyncReaderWrapper;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -36,6 +38,34 @@ class AsyncBinaryParseTest extends AsyncTestBase
     @Test
     void rawAsObject() throws IOException {
         _testBinaryAsObject(JSON_F);
+    }
+
+    // Verify that failure to write decoded binary content to caller-provided
+    // OutputStream is reported with context (and borrowed stream not closed)
+    @Test
+    void writeFailureRetainsContext() throws IOException {
+        byte[] binary = _generateData(100);
+        ByteArrayOutputStream bo = new ByteArrayOutputStream(binary.length + 10);
+        JsonGenerator g = JSON_F.createGenerator(ObjectWriteContext.empty(), bo);
+        g.writeBinary(binary);
+        g.close();
+        byte[] doc = bo.toByteArray();
+
+        for (int readSize : new int[] { 1, 3, Integer.MAX_VALUE }) {
+            AsyncReaderWrapper p = asyncForBytes(JSON_F, readSize, doc, 0);
+            assertToken(JsonToken.VALUE_STRING, p.nextToken());
+            Base64WriteFailureTest.FailingOutputStream out =
+                    new Base64WriteFailureTest.FailingOutputStream(1);
+            BinaryWriteException e = assertThrows(BinaryWriteException.class,
+                    () -> p.parser().readBinaryValue(out));
+            // underlying IOException not swallowed; nothing written yet
+            assertSame(out.failure, e.getCause());
+            assertEquals(0, e.getBytesWritten());
+            // borrowed stream not closed, not even by parser close
+            assertEquals(0, out.closeCalls);
+            p.close();
+            assertEquals(0, out.closeCalls);
+        }
     }
 
     /*
