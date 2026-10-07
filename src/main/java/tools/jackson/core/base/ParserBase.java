@@ -22,6 +22,17 @@ import tools.jackson.core.util.TextBuffer;
  */
 public abstract class ParserBase extends ParserMinimalBase
 {
+    /**
+     * Cut-off point for tracking number token exponents in
+     * {@link #_checkBigDecimalPrecision}: exponents are saturated at this
+     * magnitude since any value beyond it exceeds all legal
+     * {@link StreamReadConstraints#getMaxBigDecimalPrecision} limits
+     * (which are {@code int}s).
+     *
+     * @since 3.3
+     */
+    protected final static long EXPONENT_SATURATION_POINT = 1_000_000_000_000L;
+
     /*
     /**********************************************************************
     /* Current input data offsets
@@ -900,6 +911,9 @@ public abstract class ParserBase extends ParserMinimalBase
             // Let's actually parse from String representation, to avoid
             // rounding errors that non-decimal floating operations could incur
             final String numStr = _numberString == null ? getString() : _numberString;
+            // 07-Oct-2026: [core#1739] Verify precision constraints before
+            //   constructing BigDecimal (may throw StreamConstraintsException)
+            _checkBigDecimalPrecision(numStr);
             _numberBigDecimal = NumberInput.parseBigDecimal(
                     numStr,
                     isEnabled(StreamReadFeature.USE_FAST_BIG_NUMBER_PARSER));
@@ -961,6 +975,9 @@ public abstract class ParserBase extends ParserMinimalBase
         if (_numberString == null) {
             throw new IllegalStateException("cannot get BigDecimal from current parser state");
         }
+        // 07-Oct-2026: [core#1739] Verify precision constraints before
+        //   constructing BigDecimal (may throw StreamConstraintsException)
+        _checkBigDecimalPrecision(_numberString);
         try {
             // NOTE! Length of number string has been validated earlier
             _numberBigDecimal = NumberInput.parseBigDecimal(
@@ -971,6 +988,86 @@ public abstract class ParserBase extends ParserMinimalBase
         }
         _numberString = null;
         return _numberBigDecimal;
+    }
+
+    /**
+     * Helper method called before a {@link BigDecimal} is constructed from the
+     * original number token text, to verify that the value does not exceed the
+     * maximum precision (significant digit count) and exponent magnitude allowed
+     * by {@link StreamReadConstraints#validateBigDecimalPrecision}.
+     * The check is done directly against the retained original token text, before
+     * the (potentially expensive) {@code BigDecimal} instantiation.
+     *<p>
+     * NOTE: only invoked on code paths that materialize a {@code BigDecimal} from
+     * token text; regular integral accessors are not affected. When no limit has
+     * been configured (the default) this method returns without any scanning.
+     *
+     * @param numStr Original number token text (already syntactically validated)
+     *
+     * @throws StreamConstraintsException If precision or exponent magnitude exceeds
+     *    the configured maximum
+     *
+     * @since 3.3
+     */
+    protected void _checkBigDecimalPrecision(final String numStr) throws JacksonException
+    {
+        final StreamReadConstraints constraints = _streamReadConstraints;
+        if (!constraints.hasMaxBigDecimalPrecision()) {
+            return;
+        }
+        // Scan the (already validated) number token text for significant digits
+        // and exponent magnitude, to avoid constructing the BigDecimal itself
+        int precision = 0;
+        long exponent = 0L;
+        final int len = numStr.length();
+        int i = 0;
+        // Skip optional leading sign
+        if (i < len) {
+            final char c = numStr.charAt(0);
+            if ((c == '-') || (c == '+')) {
+                i = 1;
+            }
+        }
+        for (; i < len; ++i) {
+            final char c = numStr.charAt(i);
+            if ((c == 'e') || (c == 'E')) { // exponent part: optional sign, then digits
+                if (++i < len) {
+                    char ec = numStr.charAt(i);
+                    final boolean expNeg = (ec == '-');
+                    if (expNeg || (ec == '+')) {
+                        ++i;
+                    }
+                    long exp = 0L;
+                    for (; i < len; ++i) {
+                        ec = numStr.charAt(i);
+                        if ((ec < '0') || (ec > '9')) {
+                            break;
+                        }
+                        // Saturate: any exponent this large exceeds all legal limits
+                        if (exp < EXPONENT_SATURATION_POINT) {
+                            exp = (exp * 10) + (ec - '0');
+                        }
+                    }
+                    exponent = expNeg ? -exp : exp;
+                }
+                break;
+            }
+            if ((c >= '0') && (c <= '9')) {
+                // Leading zeroes are not significant; all later digits are
+                if ((c != '0') || (precision > 0)) {
+                    ++precision;
+                }
+            }
+            // otherwise: decimal point (or letters of non-numeric values): skip
+        }
+        try {
+            constraints.validateBigDecimalPrecision(precision, exponent);
+        } catch (StreamConstraintsException e) {
+            // Re-throw with token location and (truncated) original token text
+            throw new StreamConstraintsException(String.format(
+                    "%s (token: %s)", e.getMessage(), _longNumberDesc(numStr)),
+                    currentTokenLocation());
+        }
     }
 
     /**

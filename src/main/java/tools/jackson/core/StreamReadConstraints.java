@@ -27,6 +27,10 @@ import tools.jackson.core.exc.StreamReadException;
  *  <li>Maximum Token count: default {@code unlimited} (coded as {@code -1},
  *      (see {@link #DEFAULT_MAX_TOKEN_COUNT})
  *   </li>
+ *  <li>Maximum {@link java.math.BigDecimal} precision (and exponent magnitude):
+ *      default {@code unlimited} (coded as {@code -1},
+ *      (see {@link #DEFAULT_MAX_BIG_DECIMAL_PRECISION})
+ *   </li>
  * </ul>
  */
 public class StreamReadConstraints
@@ -82,6 +86,18 @@ public class StreamReadConstraints
      */
     private static final int MAX_BIGINT_SCALE_MAGNITUDE = 100_000;
 
+    /**
+     * Default setting for maximum {@link java.math.BigDecimal} precision:
+     * see {@link Builder#maxBigDecimalPrecision(int)} for details.
+     *<p>
+     * Default is {@code -1} which means "unlimited": no precision (or exponent
+     * magnitude) limit is applied when constructing {@link java.math.BigDecimal}
+     * values from number tokens.
+     *
+     * @since 3.3
+     */
+    public static final int DEFAULT_MAX_BIG_DECIMAL_PRECISION = -1;
+
     protected final int _maxNestingDepth;
     protected final long _maxDocLen;
     protected final long _maxTokenCount;
@@ -90,10 +106,13 @@ public class StreamReadConstraints
     protected final int _maxStringLen;
     protected final int _maxNameLen;
 
+    protected final int _maxBigDecimalPrecision;
+
     private static StreamReadConstraints DEFAULT =
         new StreamReadConstraints(DEFAULT_MAX_DEPTH,
                 DEFAULT_MAX_DOC_LEN, DEFAULT_MAX_TOKEN_COUNT,
-                DEFAULT_MAX_NUM_LEN, DEFAULT_MAX_STRING_LEN, DEFAULT_MAX_NAME_LEN);
+                DEFAULT_MAX_NUM_LEN, DEFAULT_MAX_STRING_LEN, DEFAULT_MAX_NAME_LEN,
+                DEFAULT_MAX_BIG_DECIMAL_PRECISION);
 
     /**
      * Override the default StreamReadConstraints. These defaults are only used when {@link TokenStreamFactory}
@@ -116,7 +135,8 @@ public class StreamReadConstraints
         if (streamReadConstraints == null) {
             DEFAULT = new StreamReadConstraints(DEFAULT_MAX_DEPTH,
                     DEFAULT_MAX_DOC_LEN, DEFAULT_MAX_TOKEN_COUNT,
-                    DEFAULT_MAX_NUM_LEN, DEFAULT_MAX_STRING_LEN, DEFAULT_MAX_NAME_LEN);
+                    DEFAULT_MAX_NUM_LEN, DEFAULT_MAX_STRING_LEN, DEFAULT_MAX_NAME_LEN,
+                    DEFAULT_MAX_BIG_DECIMAL_PRECISION);
         } else {
             DEFAULT = streamReadConstraints;
         }
@@ -129,6 +149,7 @@ public class StreamReadConstraints
         private int maxNumLen;
         private int maxStringLen;
         private int maxNameLen;
+        private int maxBigDecimalPrecision;
 
         /**
          * Sets the maximum nesting depth. The depth is a count of objects and arrays that have not
@@ -263,19 +284,59 @@ public class StreamReadConstraints
             return this;
         }
 
+        /**
+         * Sets the maximum precision allowed for {@link java.math.BigDecimal} values
+         * constructed from number tokens (for positive values over 0) or indicates
+         * that any precision is acceptable ({@code 0} or negative number).
+         *<p>
+         * The limit is applied just before a {@code BigDecimal} is created from the
+         * original number token text (for example by {@code JsonParser#getDecimalValue()}),
+         * and covers both aspects of the textual representation:
+         *</p>
+         *<ul>
+         *  <li>Number of significant digits (precision) of the value
+         *   </li>
+         *  <li>Magnitude (absolute value) of the exponent, if any
+         *   </li>
+         *</ul>
+         *<p>
+         * The default is {@link #DEFAULT_MAX_BIG_DECIMAL_PRECISION} ("unlimited").
+         * Note that this limit is independent of (and typically used in addition to)
+         * {@link #maxNumberLength(int)}: a short token like {@code 1e999999999} may
+         * pass the length check yet still exceed the precision limit due to its
+         * exponent.
+         *
+         * @param maxBigDecimalPrecision the maximum allowed precision (and exponent
+         *   magnitude) if positive number above 0; otherwise ({@code 0} or negative
+         *   number) means "unlimited".
+         *
+         * @return this builder
+         *
+         * @since 3.3
+         */
+        public Builder maxBigDecimalPrecision(final int maxBigDecimalPrecision) {
+            // Negative values and 0 mean "unlimited", mark with -1
+            this.maxBigDecimalPrecision = (maxBigDecimalPrecision <= 0) ?
+                    -1 : maxBigDecimalPrecision;
+            return this;
+        }
+
         Builder() {
             this(DEFAULT_MAX_DEPTH, DEFAULT_MAX_DOC_LEN, DEFAULT_MAX_TOKEN_COUNT,
-                    DEFAULT_MAX_NUM_LEN, DEFAULT_MAX_STRING_LEN, DEFAULT_MAX_NAME_LEN);
+                    DEFAULT_MAX_NUM_LEN, DEFAULT_MAX_STRING_LEN, DEFAULT_MAX_NAME_LEN,
+                    DEFAULT_MAX_BIG_DECIMAL_PRECISION);
         }
 
         Builder(final int maxNestingDepth, final long maxDocLen, final long maxTokenCount,
-                final int maxNumLen, final int maxStringLen, final int maxNameLen) {
+                final int maxNumLen, final int maxStringLen, final int maxNameLen,
+                final int maxBigDecimalPrecision) {
             this.maxNestingDepth = maxNestingDepth;
             this.maxDocLen = maxDocLen;
             this.maxTokenCount = maxTokenCount;
             this.maxNumLen = maxNumLen;
             this.maxStringLen = maxStringLen;
             this.maxNameLen = maxNameLen;
+            this.maxBigDecimalPrecision = maxBigDecimalPrecision;
         }
 
         Builder(StreamReadConstraints src) {
@@ -285,11 +346,12 @@ public class StreamReadConstraints
             maxNumLen = src._maxNumLen;
             maxStringLen = src._maxStringLen;
             maxNameLen = src._maxNameLen;
+            maxBigDecimalPrecision = src._maxBigDecimalPrecision;
         }
 
         public StreamReadConstraints build() {
             return new StreamReadConstraints(maxNestingDepth, maxDocLen, maxTokenCount,
-                    maxNumLen, maxStringLen, maxNameLen);
+                    maxNumLen, maxStringLen, maxNameLen, maxBigDecimalPrecision);
         }
     }
 
@@ -310,12 +372,32 @@ public class StreamReadConstraints
     protected StreamReadConstraints(int maxNestingDepth, long maxDocLen, long maxTokenCount,
             int maxNumLen, int maxStringLen, int maxNameLen)
     {
+        this(maxNestingDepth, maxDocLen, maxTokenCount, maxNumLen, maxStringLen,
+                maxNameLen, DEFAULT_MAX_BIG_DECIMAL_PRECISION);
+    }
+
+    /**
+     * @param maxNestingDepth Maximum input document nesting to allow
+     * @param maxDocLen Maximum input document length to allow
+     * @param maxNumLen Maximum number representation length to allow
+     * @param maxStringLen Maximum String value length to allow
+     * @param maxNameLen Maximum Object property name length to allow
+     * @param maxTokenCount Maximum number of tokens to allow
+     * @param maxBigDecimalPrecision Maximum {@link java.math.BigDecimal} precision
+     *    (and exponent magnitude) to allow
+     *
+     * @since 3.3
+     */
+    protected StreamReadConstraints(int maxNestingDepth, long maxDocLen, long maxTokenCount,
+            int maxNumLen, int maxStringLen, int maxNameLen, int maxBigDecimalPrecision)
+    {
         _maxNestingDepth = maxNestingDepth;
         _maxDocLen = maxDocLen;
         _maxTokenCount = maxTokenCount;
         _maxNumLen = maxNumLen;
         _maxStringLen = maxStringLen;
         _maxNameLen = maxNameLen;
+        _maxBigDecimalPrecision = maxBigDecimalPrecision;
     }
 
     public static Builder builder() {
@@ -445,6 +527,36 @@ public class StreamReadConstraints
      */
     public int getMaxBigIntegerScale() {
         return MAX_BIGINT_SCALE_MAGNITUDE;
+    }
+
+    /**
+     * Accessor for maximum precision (number of significant digits) and exponent
+     * magnitude allowed for {@link java.math.BigDecimal} values constructed from
+     * number tokens:
+     * see {@link Builder#maxBigDecimalPrecision(int)} for details.
+     *
+     * @return Maximum allowed {@code BigDecimal} precision (and exponent magnitude);
+     *    {@code -1} (or any non-positive value) means "unlimited"
+     *
+     * @since 3.3
+     */
+    public int getMaxBigDecimalPrecision() {
+        return _maxBigDecimalPrecision;
+    }
+
+    /**
+     * Convenience method, basically same as:
+     *<pre>
+     *  getMaxBigDecimalPrecision() &gt; 0
+     *</pre>
+     *
+     * @return {@code True} if this constraints instance has a limit for maximum
+     *    {@link java.math.BigDecimal} precision to enforce; {@code false} otherwise.
+     *
+     * @since 3.3
+     */
+    public boolean hasMaxBigDecimalPrecision() {
+        return _maxBigDecimalPrecision > 0;
     }
 
     /*
@@ -664,6 +776,54 @@ public class StreamReadConstraints
                     "BigDecimal scale (%d) magnitude exceeds the maximum allowed (%d, from %s)",
                     scale, limit,
                     _constrainRef("getMaxBigIntegerScale"));
+        }
+    }
+
+    /**
+     * Convenience method that can be used to verify that a
+     * {@link java.math.BigDecimal} value about to be constructed from a number
+     * token does not exceed the maximum precision specified by this constraints
+     * object: if it does, a {@link StreamConstraintsException} is thrown.
+     *<p>
+     * Two aspects of the (textual) value are checked against the limit
+     * (see {@link Builder#maxBigDecimalPrecision(int)}):
+     *</p>
+     *<ul>
+     *  <li>Number of significant digits ({@code precision})
+     *   </li>
+     *  <li>Magnitude (absolute value) of the exponent ({@code exponent})
+     *   </li>
+     *</ul>
+     *<p>
+     * NOTE: no limit is enforced unless a positive limit has been configured
+     * (see {@link #hasMaxBigDecimalPrecision()}); default is "unlimited".
+     *
+     * @param precision Number of significant digits of the value
+     * @param exponent Exponent of the value (0 if none)
+     *
+     * @throws StreamConstraintsException If precision or exponent magnitude exceeds
+     *    maximum allowed
+     *
+     * @since 3.3
+     */
+    public void validateBigDecimalPrecision(final int precision, final long exponent)
+        throws StreamConstraintsException
+    {
+        final int limit = _maxBigDecimalPrecision;
+        // Negative (and 0) used as marker for "unlimited"
+        if (limit > 0) {
+            if (precision > limit) {
+                throw _constructException(
+                        "BigDecimal precision (%d) exceeds the maximum allowed (%d, from %s)",
+                        precision, limit,
+                        _constrainRef("getMaxBigDecimalPrecision"));
+            }
+            if (Math.abs(exponent) > limit) {
+                throw _constructException(
+                        "BigDecimal exponent (%d) magnitude exceeds the maximum allowed (%d, from %s)",
+                        exponent, limit,
+                        _constrainRef("getMaxBigDecimalPrecision"));
+            }
         }
     }
 
